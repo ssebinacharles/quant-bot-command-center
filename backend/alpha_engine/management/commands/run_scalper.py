@@ -4,6 +4,7 @@ from django.core.management.base import BaseCommand
 from data_ingestion.services import XAUUSDMarketSimulator, FeatureEngineeringService
 from alpha_engine.ai_agent import GroqTradingAgent
 from alpha_engine.models import TradeLog 
+from alpha_engine.broker_service import ExnessBrokerBridge
 
 class Command(BaseCommand):
     help = "Runs the live AI scalper feature pipeline and execution loop"
@@ -12,9 +13,19 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Starting Alpha Engine core execution terminal..."))
         
         # Initialize your real services side-by-side
+    
+        
         market_feed = XAUUSDMarketSimulator()
         feature_pipeline = FeatureEngineeringService()
         ai_agent = GroqTradingAgent()
+        broker = ExnessBrokerBridge(
+            account_id="12345678", 
+            api_token="mock_api_token_abc123", 
+            server="Exness-MT5-Trial9"
+        )
+        if not broker.connect():
+            self.stdout.write(self.style.ERROR("Failed to initialize broker bridge."))
+            return
 
         for tick in range(5):
             self.stdout.write(f"\n--- Processing Market Frame {tick + 1} ---")
@@ -48,24 +59,36 @@ class Command(BaseCommand):
             decision = ai_agent.analyze_market(market_state)
             self.stdout.write(f"Groq Trade Directive: {decision['action']} | Confidence: {decision['confidence']}%")
 
-           # 5. Save execution metrics directly to your Django Database
+            # 5. Execute via Exness Bridge and Save to Django Database
             if decision['action'] in ['BUY', 'SELL']:
                 try:
-                    # Generate a unique 8-digit mock broker ticket number for simulation
-                    import random
-                    mock_ticket_id = random.randint(10000000, 99999999)
-
-                    TradeLog.objects.create(
-                        ticket_id=mock_ticket_id,                         # Fixes the UNIQUE constraint error
+                    # Fire the order through your web-ready broker bridge
+                    trade_result = broker.execute_trade(
                         symbol="XAUUSD",
                         action=decision['action'],
-                        entry_price=Decimal(str(latest_close)),
-                        lots=Decimal("0.10"),
-                        ai_confidence_score=int(decision['confidence']),
-                        raw_groq_response={"reason": decision['reason']},
-                        feature_snapshot=market_state 
+                        lots=0.10
                     )
-                    self.stdout.write(self.style.SUCCESS(f"Trade record {mock_ticket_id} verified and pushed to live dashboard database!"))
+                    
+                    if trade_result["status"] == "SUCCESS":
+                        # Log the real broker responses directly to your database
+                        TradeLog.objects.create(
+                            ticket_id=trade_result["broker_ticket"],         # Real ticket from web gateway
+                            symbol="XAUUSD",
+                            action=decision['action'],
+                            entry_price=trade_result["execution_price"],     # Real fill price from web gateway
+                            lots=Decimal("0.10"),
+                            ai_confidence_score=int(decision['confidence']),
+                            raw_groq_response={"reason": decision['reason']},
+                            feature_snapshot=market_state 
+                        )
+                        self.stdout.write(self.style.SUCCESS(
+                            f"Exness Trade {trade_result['broker_ticket']} verified and pushed to live dashboard database!"
+                        ))
+                    else:
+                        self.stdout.write(self.style.ERROR(f"Broker Execution Failed: {trade_result['error']}"))
+                        
                 except Exception as db_err:
-                    self.stdout.write(self.style.ERROR(f"Database insertion failed: {db_err}"))
+                    self.stdout.write(self.style.ERROR(f"Database/Execution logging failed: {db_err}"))
             time.sleep(4)
+            
+            
