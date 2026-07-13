@@ -19,6 +19,6 @@ from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
-    path("admin/", admin.site.urls),
-    path('api/', include('alpha_engine.urls')),
+    path('admin/', admin.site.urls),
+    path('', include('alpha_engine.urls')),  # Injects your trade and regime API routes
 ]
