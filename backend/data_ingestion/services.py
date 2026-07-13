@@ -84,3 +84,38 @@ class FeatureEngineeringService:
         df['high'] = df['close'] + np.random.uniform(0.5, 2.0, size=bars)
         df['low'] = df['close'] - np.random.uniform(0.5, 2.0, size=bars)
         return df
+
+
+import random
+import time
+
+class XAUUSDMarketSimulator:
+    """
+    Generates rolling OHLC dataframes matching the structure 
+    expected by FeatureEngineeringService.
+    """
+    def __init__(self):
+        self.current_price = 2350.00
+
+    def generate_market_dataframe(self, ticks_count=50):
+        data = []
+        base_time = time.time() - (ticks_count * 60)
+        
+        for i in range(ticks_count):
+            change = round(random.uniform(-2.0, 2.0), 2)
+            open_p = self.current_price
+            close_p = round(open_p + change, 2)
+            high_p = round(max(open_p, close_p) + random.uniform(0, 1.0), 2)
+            low_p = round(min(open_p, close_p) - random.uniform(0, 1.0), 2)
+            
+            data.append({
+                "timestamp": base_time + (i * 60),
+                "open": open_p,
+                "high": high_p,
+                "low": low_p,
+                "close": close_p,
+                "volume": random.randint(100, 500)
+            })
+            self.current_price = close_p
+
+        return pd.DataFrame(data)
