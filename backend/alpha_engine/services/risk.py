@@ -1,5 +1,5 @@
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +18,28 @@ class RiskManagerService:
         Processes a trade signal and builds a definitive risk configuration payload.
         Uses Average True Range (ATR) for volatility-adjusted stop losses.
         """
-        # Fallback for neutral holds
+        # 1. Fallback for neutral holds or invalid actions
         if action not in ["BUY", "SELL"]:
-            return {"status": "REJECTED", "reason": "Action is HOLD, skipping evaluation."}
+            return {"status": "REJECTED", "reason": f"Action is {action}, skipping evaluation."}
 
-        balance = Decimal(str(account_balance))
-        entry = Decimal(str(entry_price))
-        volatility = Decimal(str(atr))
+        # 2. Invincible Type Conversions
+        try:
+            balance = Decimal(str(account_balance))
+            entry = Decimal(str(entry_price))
+            volatility = Decimal(str(atr))
+        except (ValueError, TypeError, InvalidOperation):
+            return {"status": "REJECTED", "reason": "Telemetry data type mismatch. Calculations aborted."}
 
         if balance <= 0:
             return {"status": "REJECTED", "reason": "Account balance is zero or negative."}
+            
+        if volatility <= 0:
+            return {"status": "REJECTED", "reason": f"ATR reading is {volatility}. Stop loss distance cannot be evaluated."}
 
-        # 1. Determine Cash Risk Amount (e.g., 1% of $1,000 = $10)
+        # 3. Determine Cash Risk Amount (e.g., 1% of $1,000 = $10)
         cash_at_risk = balance * self.max_risk_pct
 
-        # 2. Calculate Stop Loss Distance using standard 2x ATR multiplier
+        # 4. Calculate Stop Loss Distance using standard 2x ATR multiplier
         sl_distance = volatility * Decimal("2.0")
         
         if action == "BUY":
@@ -42,9 +49,9 @@ class RiskManagerService:
             stop_loss = entry + sl_distance
             take_profit = entry - (sl_distance * Decimal("3.0"))
 
-        # 3. Calculate Contract Lot Sizing based on Asset Type
+        # 5. Calculate Contract Lot Sizing based on Asset Type
         # Standard Contract size rules: Gold (XAUUSD) = 100 ounces per standard lot.
-        if "XAUUSD" in symbol.upper():
+        if "XAU" in symbol.upper():
             contract_size = Decimal("100")
         else:
             contract_size = Decimal("100000")  # Default standard Forex lot size
@@ -55,11 +62,11 @@ class RiskManagerService:
             # Round down to 2 decimal places (broker standard for lot sizes)
             final_lots = max(Decimal("0.01"), round(calculated_lots, 2))
         except ZeroDivisionError:
-            return {"status": "REJECTED", "reason": "Volatility reading is 0. Cannot compute risk metrics."}
+            return {"status": "REJECTED", "reason": "Volatility calculation resulted in zero division."}
 
-        # 4. Final Security Check: Prevent excessively massive position spikes
+        # 6. Final Security Check: Prevent excessively massive position spikes
         if final_lots > Decimal("5.00"):
-            logger.warning(f"Calculated size {final_lots} exceeds maximum safety ceiling. Capping position.")
+            logger.warning(f"Calculated size {final_lots} exceeds maximum safety ceiling. Capping position to safe default.")
             final_lots = Decimal("1.00")
 
         return {
@@ -68,7 +75,7 @@ class RiskManagerService:
             "symbol": symbol,
             "entry_price": float(entry),
             "lots": float(final_lots),
-            "stop_loss": float(round(stop_loss, 2 if "XAUUSD" in symbol.upper() else 5)),
-            "take_profit": float(round(take_profit, 2 if "XAUUSD" in symbol.upper() else 5)),
+            "stop_loss": float(round(stop_loss, 2 if "XAU" in symbol.upper() else 5)),
+            "take_profit": float(round(take_profit, 2 if "XAU" in symbol.upper() else 5)),
             "cash_at_risk": float(round(cash_at_risk, 2))
         }
