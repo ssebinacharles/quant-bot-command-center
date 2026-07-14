@@ -1,15 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-# Make sure TradeExecutionView is explicitly added to this import line:
-from .views import TradeLogViewSet, MarketRegimeViewSet, TradeExecutionView
+from .views import MarketStateViewSet, TradeMemoryViewSet, TradeExecutionView
 
 router = DefaultRouter()
-router.register(r'trades', TradeLogViewSet, basename='trade-logs')
-router.register(r'regimes', MarketRegimeViewSet, basename='market-regimes')
+router.register(r'market-states', MarketStateViewSet, basename='marketstate')
+router.register(r'trades', TradeMemoryViewSet, basename='tradememory')
 
 urlpatterns = [
+    # REST API endpoints for the frontend
     path('', include(router.urls)),
     
-    # Injects the custom API execution route
-    path('engine/execute/', TradeExecutionView.as_view(), name='engine-execute'),
+    # Live webhook execution channel for the Python MT5 Bridge
+    path('engine/execute/', TradeExecutionView.as_view(), name='trade_execute'),
 ]

@@ -1,14 +1,16 @@
-# backend/alpha_engine/admin.py
 from django.contrib import admin
-from .models import TradeLog, MarketRegime
+from .models import MarketState, TradeMemory
 
-@admin.register(TradeLog)
-class TradeLogAdmin(admin.ModelAdmin):
-    list_display = ('ticket_id', 'symbol', 'action', 'status', 'lots', 'profit', 'ai_confidence_score', 'created_at')
+@admin.register(MarketState)
+class MarketStateAdmin(admin.ModelAdmin):
+    list_display = ('timestamp', 'symbol', 'current_price', 'rsi_14', 'market_regime', 'risk_multiplier')
+    list_filter = ('market_regime', 'symbol')
+    search_fields = ('symbol', 'market_regime')
+    ordering = ('-timestamp',)
+
+@admin.register(TradeMemory)
+class TradeMemoryAdmin(admin.ModelAdmin):
+    list_display = ('ticket_id', 'symbol', 'action', 'status', 'lots', 'entry_price', 'profit', 'opened_at')
     list_filter = ('status', 'action', 'symbol')
-    search_fields = ('ticket_id', 'raw_groq_response')
-
-@admin.register(MarketRegime)
-class MarketRegimeAdmin(admin.ModelAdmin):
-    list_display = ('symbol', 'current_regime', 'risk_multiplier', 'timestamp')
-    list_filter = ('current_regime', 'symbol')
+    search_fields = ('ticket_id', 'symbol', 'action')
+    ordering = ('-opened_at',)

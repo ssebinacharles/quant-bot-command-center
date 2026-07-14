@@ -1,68 +1,76 @@
 import uuid
+from rest_framework import viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.authentication import TokenAuthentication
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from rest_framework import status
-from .models import TradeLog
+from rest_framework.authentication import TokenAuthentication
+
+from .models import MarketState, TradeMemory
+from .serializers import MarketStateSerializer, TradeMemorySerializer
 from .services.brain import MarketBrainService
 from .services.risk import RiskManagerService
-from rest_framework import viewsets
-from rest_framework.decorators import action
-from alpha_engine.models import TradeLog, MarketRegime
-from alpha_engine.serializers import TradeLogSerializer, MarketRegimeSerializer
 
-class TradeLogViewSet(viewsets.ReadOnlyModelViewSet):
+# =====================================================================
+# 1. VIEWSETS FOR THE REACT FRONTEND
+# =====================================================================
+
+class MarketStateViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    Automated API controller providing live streams and replay buffers
-    of system trading activity, sorted by the latest execution first.
+    Exposes technical snapshots and macro-regime classifications 
+    to your React frontend dashboard, sorted by the latest data first.
     """
-    # FIX 1: Changed '-timestamp' to '-created_at'
-    queryset = TradeLog.objects.all().order_by('-created_at')
-    serializer_class = TradeLogSerializer
+    queryset = MarketState.objects.all().order_by('-timestamp')
+    serializer_class = MarketStateSerializer
+
+
+class TradeMemoryViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Exposes live trading logs to your React frontend, featuring an 
+    MQL5-style replay-buffer for real-time visualization.
+    """
+    queryset = TradeMemory.objects.all().order_by('-opened_at')
+    serializer_class = TradeMemorySerializer
 
     @action(detail=False, methods=['get'], url_path='replay-buffer')
     def replay_buffer(self, request):
         """
-        Exposes the internal historical window needed for the user dashboard.
-        Tries to use your custom manager, falls back to standard slicing if needed.
+        Emulates the MQL5 replayBuffer array. Instantly queries 
+        the database for the last 25 closed trades for analysis.
         """
-        if hasattr(TradeLog.objects, 'get_recent_buffer'):
-            recent_trades = TradeLog.objects.get_recent_buffer(limit=25)
+        if hasattr(TradeMemory.objects, 'get_recent_buffer'):
+            recent_trades = TradeMemory.objects.get_recent_buffer(limit=25)
         else:
-            # FIX 2: Changed '-timestamp' to '-created_at' here as well
-            recent_trades = TradeLog.objects.all().order_by('-created_at')[:25]
+            recent_trades = TradeMemory.objects.all().order_by('-opened_at')[:25]
             
         serializer = self.get_serializer(recent_trades, many=True)
         return Response(serializer.data)
 
 
-class MarketRegimeViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    Optional addition: Exposes the current macro market context 
-    (Trending, Ranging, High Volatility, etc.) to your React frontend.
-    """
-    # Keeps your safe fallback check intact
-    queryset = MarketRegime.objects.all().order_by('-created_at') if hasattr(MarketRegime, 'created_at') else MarketRegime.objects.all()
-    serializer_class = MarketRegimeSerializer
+# =====================================================================
+# 2. THE CENTRAL QUANT CONTROL ROTOR
+# =====================================================================
 
 class TradeExecutionView(APIView):
     """
-    The Command Router: Receives live MT5 data, consults the AI, 
-    calculates risk, and returns exact execution instructions.
+    The Command Router: Receives telemetry data from the MT5 bridge,
+    saves the market state, processes dynamic AI actions, and manages risk.
     """
     authentication_classes = [TokenAuthentication]
-    permission_classes = [AllowAny]  # For testing, you can switch to IsAuthenticated in production
+    permission_classes = [AllowAny]  # Keep as AllowAny for rapid sandbox testing!
     
     def post(self, request):
-        print("🔑 INCOMING AUTH HEADER:", request.headers.get('Authorization'))
+        print("🔑 INCOMING TELEMETRY RECEIVED. AUTH:", request.headers.get('Authorization'))
         data = request.data
         
-        # 1. Extract the minimum required terminal state
+        # 1. Extract core data points
         symbol = data.get("symbol", "XAUUSD")
         account_balance = data.get("account_balance")
         current_price = data.get("current_price")
         atr = data.get("atr_14")
+        rsi = data.get("rsi_14")
+        market_regime = data.get("market_regime", "UNKNOWN")
+        active_positions = data.get("active_positions", [])
         
         if not all([account_balance, current_price, atr]):
             return Response(
@@ -70,24 +78,42 @@ class TradeExecutionView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 2. Consult the Groq Decision Engine
-        brain = MarketBrainService()
-        decision = brain.analyze_market_snapshot(data)
+        # 2. Log exact conditions in the database (Feature Engine Cache)
+        state = MarketState.objects.create(
+            symbol=symbol,
+            current_price=current_price,
+            rsi_14=rsi,
+            atr_14=atr,
+            market_regime=market_regime
+        )
         
-        # If the AI says hold, we terminate the process immediately.
-        if decision.get("action") == "HOLD":
+        # 3. Call the Market Brain
+        brain = MarketBrainService()
+        if hasattr(brain, 'analyze_market_and_positions'):
+            decision = brain.analyze_market_and_positions(data, active_positions)
+        else:
+            decision = brain.analyze_market_snapshot(data)
+        
+        # 4. Handle HOLDS & DYNAMIC CLOSURES
+        action_type = decision.get("action")
+        
+        if action_type == "HOLD":
             return Response({
                 "status": "HOLD", 
-                "reason": decision.get("reason")
+                "reason": decision.get("reason", decision.get("reasoning", "System standing by."))
             }, status=status.HTTP_200_OK)
+            
+        if decision.get("status") == "close_request":
+            # Dynamic Exit requested! Command the bridge to execute a close sequence
+            return Response(decision, status=status.HTTP_200_OK)
         
-        # 3. Pass through Risk Management Core
+        # 5. Evaluate and size new trades through your Risk Manager
         risk_manager = RiskManagerService()
         risk_profile = risk_manager.evaluate_and_size_trade(
             account_balance=account_balance,
             entry_price=current_price,
             atr=atr,
-            action=decision["action"],
+            action=action_type,
             symbol=symbol
         )
         
@@ -97,22 +123,26 @@ class TradeExecutionView(APIView):
                 "reason": risk_profile.get("reason")
             }, status=status.HTTP_200_OK)
         
-        # 4. Log the generated signal into the database as PENDING
-        # We generate a temporary ticket ID until MT5 confirms the actual broker execution
+        # 6. Save trade with uuid mapping inside TradeMemory
         temp_ticket = f"PENDING_{uuid.uuid4().hex[:8].upper()}"
         
-        trade_log = TradeLog.objects.create(
+        trade_log = TradeMemory.objects.create(
+            market_state=state,
             ticket_id=temp_ticket,
             symbol=symbol,
             action=risk_profile["action"],
-            entry_price=risk_profile["entry_price"],
+            status='PENDING',
             lots=risk_profile["lots"],
-            ai_confidence_score=decision.get("confidence", 0),
+            entry_price=risk_profile["entry_price"],
+            stop_loss=risk_profile.get("stop_loss"),
+            take_profit=risk_profile.get("take_profit"),
+            ai_confidence_score=decision.get("confidence", decision.get("confidence_score", 0)),
+            ai_reasoning=decision.get("reason", decision.get("reasoning", "Execution authorized.")),
             raw_groq_response=decision,
             feature_snapshot=data
         )
         
-        # 5. Return the exact execution blueprint back to MT5
+        # 7. Package complete blueprint payload for MT5 execution
         return Response({
             "status": "executed",
             "db_id": trade_log.id,
@@ -121,5 +151,5 @@ class TradeExecutionView(APIView):
             "lots": risk_profile["lots"],
             "stop_loss": risk_profile["stop_loss"],
             "take_profit": risk_profile["take_profit"],
-            "reasoning": decision.get("reason")
+            "reasoning": decision.get("reason", decision.get("reasoning", ""))
         }, status=status.HTTP_200_OK)

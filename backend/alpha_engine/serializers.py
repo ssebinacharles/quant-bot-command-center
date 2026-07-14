@@ -1,24 +1,12 @@
 from rest_framework import serializers
-from alpha_engine.models import TradeLog, MarketRegime  # Added MarketRegime here
+from .models import MarketState, TradeMemory
 
-class TradeLogSerializer(serializers.ModelSerializer):
+class MarketStateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = TradeLog
-        fields = [
-            'id', 
-            'ticket_id', 
-            'symbol', 
-            'action', 
-            'entry_price', 
-            'lots', 
-            'ai_confidence_score', 
-            'raw_groq_response', 
-            'feature_snapshot', 
-            'created_at'
-        ]
+        model = MarketState
+        fields = '__all__'
 
-# ADD THIS CLASS TO FIX THE IMPORT ERROR:
-class MarketRegimeSerializer(serializers.ModelSerializer):
+class TradeMemorySerializer(serializers.ModelSerializer):
     class Meta:
-        model = MarketRegime
-        fields = '__all__'  # Automatically serializes all fields inside your MarketRegime model
+        model = TradeMemory
+        fields = '__all__'
