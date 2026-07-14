@@ -1,6 +1,8 @@
 import uuid
 from rest_framework.views import APIView
 from rest_framework.response import Response
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework import status
 from .models import TradeLog
 from .services.brain import MarketBrainService
@@ -49,7 +51,11 @@ class TradeExecutionView(APIView):
     The Command Router: Receives live MT5 data, consults the AI, 
     calculates risk, and returns exact execution instructions.
     """
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [AllowAny]  # For testing, you can switch to IsAuthenticated in production
+    
     def post(self, request):
+        print("🔑 INCOMING AUTH HEADER:", request.headers.get('Authorization'))
         data = request.data
         
         # 1. Extract the minimum required terminal state
@@ -108,7 +114,7 @@ class TradeExecutionView(APIView):
         
         # 5. Return the exact execution blueprint back to MT5
         return Response({
-            "status": "EXECUTE",
+            "status": "executed",
             "db_id": trade_log.id,
             "action": risk_profile["action"],
             "symbol": risk_profile["symbol"],
