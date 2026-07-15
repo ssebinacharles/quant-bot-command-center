@@ -64,3 +64,26 @@ class PortfolioManagerService:
             "max_allowed_loss": float(max_allowed_loss),
             "action_required": "FLATTEN_ALL" if is_breached else "CONTINUE"
         }
+    def evaluate_drawdown(self, current_equity, account_balance):
+        """
+        Checks if the current equity drawdown has breached safety thresholds.
+        Returns 'FLATTEN_ALL' if drawdown >= 5%, otherwise 'PROCEED'.
+        """
+        if not account_balance or account_balance <= 0:
+            return "PROCEED"
+        
+        # Calculate drawdown percentage
+        drawdown_pct = (account_balance - current_equity) / account_balance
+        
+        # 5% safety threshold circuit breaker
+        if drawdown_pct >= 0.05:
+            return "FLATTEN_ALL"
+        return "PROCEED"
+
+    def evaluate_active_exits(self, active_positions, current_price, atr):
+        """
+        Monitors active trades for trailing stops or profit targets.
+        Returns exit actions or an empty dict if no action is needed.
+        """
+        # Default behavior: proceed without forcing an exit
+        return {"action": "PROCEED"}

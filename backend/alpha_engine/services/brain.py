@@ -13,27 +13,33 @@ class MarketBrainService:
     # =====================================================================
     # 1. MARKET REGIME DETECTOR
     # =====================================================================
-    def detect_regime(self, rsi, atr, price):
+    # In backend/alpha_engine/services/brain.py
+
+    def detect_regime(self, rsi=50.0, atr=1.0, price=None, *args, **kwargs):
         """
         Calculates the current structural market phase based on key technical features.
         Returns: (regime_string, risk_multiplier)
         """
+        # Fallback in case parameters are passed under alternative keys
+        rsi = rsi if rsi is not None else kwargs.get("rsi_14", 50.0)
+        atr = atr if atr is not None else kwargs.get("atr_14", 1.0)
+        
         # Safe type conversion
         try:
-            rsi = float(rsi) if rsi is not None else 50.0
-            atr = float(atr) if atr is not None else 1.0
-        except ValueError:
+            rsi = float(rsi)
+            atr = float(atr)
+        except (ValueError, TypeError):
             rsi, atr = 50.0, 1.0
 
-        # Heuristic-based classification (Can be expanded with ML/clustering later)
+        # Heuristic-based classification
         if rsi >= 75.0:
-            return "BULL_CLIMAX", 0.50  # Reduce risk, market is highly overextended
+            return "BULL_CLIMAX", 0.50
         elif rsi <= 25.0:
-            return "BEAR_CLIMAX", 0.50  # Reduce risk, oversold exhaustion
+            return "BEAR_CLIMAX", 0.50
         elif 45.0 <= rsi <= 55.0 and atr < 1.5:
-            return "RANGING", 1.00      # Normal range-bound trading
+            return "RANGING", 1.00
         elif rsi > 55.0:
-            return "TRENDING_UP", 1.25  # High-confidence trend alignment; scale up slightly
+            return "TRENDING_UP", 1.25
         elif rsi < 45.0:
             return "TRENDING_DOWN", 1.25
         

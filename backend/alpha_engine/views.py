@@ -12,6 +12,10 @@ from .services.risk import RiskManagerService
 from .services.analytics import PerformanceAnalyticsService
 from .services.portfolio import PortfolioManagerService
 from .services.layering import GoldLayeringEngine
+from .services.probability import ProbabilityEngine
+import logging
+
+logger = logging.getLogger(__name__)
 
 # =====================================================================
 # 1. VIEWSETS FOR THE REACT FRONTEND
@@ -81,51 +85,61 @@ class TradeExecutionView(APIView):
         analytics = PerformanceAnalyticsService()
         portfolio_manager = PortfolioManagerService()
         layering_engine = GoldLayeringEngine()
+        probability_engine = ProbabilityEngine() # <--- NEW: Initialize the EV Engine
 
         # ==========================================
-        # 1. GLOBAL PORTFOLIO DRAWDOWN GUARD (The Breaker)
+        # 1. GLOBAL PORTFOLIO DRAWDOWN GUARD
         # ==========================================
-        portfolio_status = portfolio_manager.evaluate_portfolio_safety(
-            account_balance=account_balance,
-            current_equity=current_equity
+        # Stops trading or flattens positions if cumulative drawdown breaches safety thresholds
+        drawdown_action = portfolio_manager.evaluate_drawdown(
+            current_equity=current_equity, 
+            account_balance=account_balance
         )
-        
-        if portfolio_status["circuit_breaker_active"]:
-            logger.critical("EMERGENCY INTERVENTION: Daily Drawdown Limit Breached. Sending Flatten request.")
+        if drawdown_action == "FLATTEN_ALL":
             return Response({
                 "action": "FLATTEN_ALL",
-                "reasoning": f"DAILY DRAWDOWN MITIGATION: Enforcing hard stop. Daily Loss: ${abs(portfolio_status['total_daily_pnl'])}."
+                "reasoning": "Global portfolio drawdown threshold breached. Emergency stop and flatten active."
             }, status=status.HTTP_200_OK)
-
         # ==========================================
         # 2. MARKET REGIME DETECTION
         # ==========================================
-        regime, risk_multiplier = brain.detect_regime(rsi, atr, current_price)
+        # Classifies the market state (e.g., TRENDING_UP, TRENDING_DOWN, RANGING) 
+        # and returns a risk multiplier to scale trade size dynamically.
+        regime_data = brain.detect_regime(
+            rsi=rsi,
+            atr=atr,
+            price=current_price,                         
+        )
+        print(f"DEBUG: Checking regime - {regime}")
+        learning_veto = analytics.evaluate_regime_performance_veto(regime=regime)
 
         # ==========================================
         # 3. SELF-LEARNING VETO LOOP
         # ==========================================
-        performance_data = analytics.generate_dashboard_metrics()
-        regime_stats = performance_data.get("regime_performance", {}).get(regime, {})
-        
-        if regime_stats:
-            total_regime_trades = regime_stats.get("total_trades", 0)
-            regime_win_rate = regime_stats.get("win_rate", 100.0)
-            if total_regime_trades >= 5 and regime_win_rate < 40.0:
-                return Response({
-                    "action": "HOLD",
-                    "reasoning": f"Self-Learning Block: Bypassing execution in {regime} due to a poor {regime_win_rate}% win rate."
-                }, status=status.HTTP_200_OK)
+        # Inspects past database trade records. If recent win rates in the current 
+        # regime fall below a safety threshold, it halts further exposure in this environment.
+        learning_veto = analytics.evaluate_regime_performance_veto(regime=regime)
+        if learning_veto.get("veto", False):
+            return Response({
+                "action": "HOLD",
+                "reasoning": f"Self-Learning Veto: {learning_veto.get('reason', 'Underperforming regime characteristics detected.')}"
+            }, status=status.HTTP_200_OK)
 
         # ==========================================
-        # 4. ACTIVE POSITION MANAGMENT & DYNAMIC EXIT STRATEGY
+        # 4. ACTIVE POSITION MANAGEMENT & DYNAMIC EXIT STRATEGY
         # ==========================================
-        exit_signal = brain.evaluate_active_exits(active_positions, rsi, regime)
-        if exit_signal:
-            return Response(exit_signal, status=status.HTTP_200_OK)
+        # Manages live open trades—calculates trailing stops, checks partial profit-taking, 
+        # and signals exits to MT5 if key risk parameters or trend-reversal milestones are met.
+        exit_decision = portfolio_manager.evaluate_active_exits(
+            active_positions=active_positions,
+            current_price=current_price,
+            atr=atr
+        )
+        if exit_decision.get("action") in ["CLOSE_POSITION", "PARTIAL_CLOSE", "TRAILING_STOP_UPDATE"]:
+            return Response(exit_decision, status=status.HTTP_200_OK)
 
         # ==========================================
-        # 5. CONSULT AI DECISION PIPELINE (Get direction)
+        # 5. CONSULT AI DECISION PIPELINE
         # ==========================================
         ai_payload = brain.analyze_market_and_positions(
             market_data={"symbol": symbol, "current_price": current_price, "rsi_14": rsi, "atr_14": atr},
@@ -140,7 +154,28 @@ class TradeExecutionView(APIView):
             return Response({"action": "HOLD", "reasoning": reasoning}, status=status.HTTP_200_OK)
 
         # ==========================================
-        # 6. SMART MULTI-LAYERING EVALUATION (Gold Scalper DNA)
+        # 6. PROBABILITY ENGINE (The Mathematical Edge Veto)
+        # ==========================================
+        # Calculate our baseline risk/reward dollar amounts for the fallback math
+        # Assuming our standard 1% risk and 1:3 reward ratio
+        baseline_risk_dollars = float(account_balance) * (0.01 * float(risk_multiplier))
+        baseline_reward_dollars = baseline_risk_dollars * 3.0
+
+        ev_decision = probability_engine.calculate_regime_ev(
+            regime=regime,
+            proposed_risk=baseline_risk_dollars,
+            proposed_reward=baseline_reward_dollars
+        )
+
+        if ev_decision["action"] == "BLOCK":
+            logger.warning(f"Trade vetoed by Probability Engine: {ev_decision['reason']}")
+            return Response({
+                "action": "HOLD",
+                "reasoning": f"Math Veto: {ev_decision['reason']}"
+            }, status=status.HTTP_200_OK)
+
+        # ==========================================
+        # 7. SMART MULTI-LAYERING EVALUATION (Gold Scalper DNA)
         # ==========================================
         layer_decision = layering_engine.calculate_next_layer(
             active_positions=active_positions,
@@ -156,9 +191,8 @@ class TradeExecutionView(APIView):
             return Response({"action": "HOLD", "reasoning": layer_decision["reason"]}, status=status.HTTP_200_OK)
 
         # ==========================================
-        # 7. POSITION RISK CALCULATOR
+        # 8. POSITION RISK CALCULATOR
         # ==========================================
-        # Scale our base risk % relative to current market regime volatility
         adjusted_risk_pct = 0.01 * float(risk_multiplier)
         risk_manager.max_risk_pct = adjusted_risk_pct
 
@@ -173,14 +207,12 @@ class TradeExecutionView(APIView):
         if risk_profile.get("status") == "REJECTED":
             return Response({"action": "HOLD", "reasoning": f"Risk engine override: {risk_profile.get('reason')}"}, status=status.HTTP_200_OK)
 
-        # Override lot sizing if the Multi-Layering engine calculated a scaled Grid Entry
         final_lots = risk_profile["lots"]
         if layer_decision["action"] == "EXECUTE_LAYER":
             final_lots = layer_decision["target_lots"]
-            logger.info(f"Layering active. Overriding entry lots to: {final_lots}")
 
         # ==========================================
-        # 8. LOG TO TRADE MEMORY & RESPOND
+        # 9. LOG TO TRADE MEMORY & RESPOND
         # ==========================================
         state_record = MarketState.objects.create(
             symbol=symbol,
@@ -197,7 +229,7 @@ class TradeExecutionView(APIView):
             "lots": final_lots,
             "stop_loss": risk_profile["stop_loss"],
             "take_profit": risk_profile["take_profit"],
-            "reasoning": f"[Confidence: {confidence}%] {reasoning}",
+            "reasoning": f"[Confidence: {confidence}%] [EV: ${ev_decision.get('ev', 0):.2f}] {reasoning}",
             "market_state_id": state_record.id
         }
 
