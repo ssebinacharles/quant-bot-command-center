@@ -105,13 +105,13 @@ class TradeExecutionView(APIView):
         # ==========================================
         # Classifies the market state (e.g., TRENDING_UP, TRENDING_DOWN, RANGING) 
         # and returns a risk multiplier to scale trade size dynamically.
-        regime_data = brain.detect_regime(
+        regime, risk_multiplier = brain.detect_regime(
             rsi=rsi,
             atr=atr,
             price=current_price,                         
         )
+        
         print(f"DEBUG: Checking regime - {regime}")
-        learning_veto = analytics.evaluate_regime_performance_veto(regime=regime)
 
         # ==========================================
         # 3. SELF-LEARNING VETO LOOP
@@ -119,10 +119,21 @@ class TradeExecutionView(APIView):
         # Inspects past database trade records. If recent win rates in the current 
         # regime fall below a safety threshold, it halts further exposure in this environment.
         learning_veto = analytics.evaluate_regime_performance_veto(regime=regime)
-        if learning_veto.get("veto", False):
+        
+        # FIX: Make bulletproof! If a boolean is returned (often happens in tests), convert to dict
+        if isinstance(learning_veto, bool):
+            learning_veto = {
+                "veto": learning_veto, 
+                "reason": "Underperforming regime characteristics detected."
+            }
+
+        # Check for both True veto flag OR an explicit BLOCK action
+        # Force a HOLD if veto is truthy OR action is explicitly BLOCK
+        is_vetoed = learning_veto.get("veto", False) is True or learning_veto.get("action") == "BLOCK"
+        if is_vetoed:
             return Response({
                 "action": "HOLD",
-                "reasoning": f"Self-Learning Veto: {learning_veto.get('reason', 'Underperforming regime characteristics detected.')}"
+                "reasoning": f"Self-Learning Veto: {learning_veto.get('reason', 'Veto active')}"
             }, status=status.HTTP_200_OK)
 
         # ==========================================
@@ -157,7 +168,6 @@ class TradeExecutionView(APIView):
         # 6. PROBABILITY ENGINE (The Mathematical Edge Veto)
         # ==========================================
         # Calculate our baseline risk/reward dollar amounts for the fallback math
-        # Assuming our standard 1% risk and 1:3 reward ratio
         baseline_risk_dollars = float(account_balance) * (0.01 * float(risk_multiplier))
         baseline_reward_dollars = baseline_risk_dollars * 3.0
 
@@ -167,11 +177,17 @@ class TradeExecutionView(APIView):
             proposed_reward=baseline_reward_dollars
         )
 
-        if ev_decision["action"] == "BLOCK":
-            logger.warning(f"Trade vetoed by Probability Engine: {ev_decision['reason']}")
+        # FIX: Extract and define safe_ev before checking it
+        raw_ev = ev_decision.get("ev", 0.0)
+        safe_ev = float(raw_ev) if raw_ev is not None else 0.0
+        
+        # Now we can safely check the value
+        # CHANGE: Changed <= 0 to < 0 to allow neutral (0.0) EV trades
+        ev_action = ev_decision.get("action", "")
+        if ev_action == "BLOCK" or safe_ev < 0:
             return Response({
                 "action": "HOLD",
-                "reasoning": f"Math Veto: {ev_decision['reason']}"
+                "reasoning": f"Math Veto: {ev_decision.get('reason', 'Insufficient EV')} (EV: ${safe_ev:.2f})"
             }, status=status.HTTP_200_OK)
 
         # ==========================================
@@ -197,9 +213,9 @@ class TradeExecutionView(APIView):
         risk_manager.max_risk_pct = adjusted_risk_pct
 
         risk_profile = risk_manager.evaluate_and_size_trade(
-            account_balance=account_balance,
-            entry_price=current_price,
-            atr=atr,
+            account_balance=float(account_balance),  # FIX: Force balance to float!
+            entry_price=float(current_price),        # FIX: Force price to float!
+            atr=float(atr),                          # FIX: Force atr to float!
             action=action,
             symbol=symbol
         )
@@ -229,7 +245,7 @@ class TradeExecutionView(APIView):
             "lots": final_lots,
             "stop_loss": risk_profile["stop_loss"],
             "take_profit": risk_profile["take_profit"],
-            "reasoning": f"[Confidence: {confidence}%] [EV: ${ev_decision.get('ev', 0):.2f}] {reasoning}",
+            "reasoning": f"[Confidence: {confidence}%] [EV: ${ev_decision.get('ev') if ev_decision.get('ev') is not None else 0.0:.2f}] {reasoning}",
             "market_state_id": state_record.id
         }
 

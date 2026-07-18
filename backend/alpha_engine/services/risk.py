@@ -37,7 +37,7 @@ class RiskManagerService:
             return {"status": "REJECTED", "reason": f"ATR reading is {volatility}. Stop loss distance cannot be evaluated."}
 
         # 3. Determine Cash Risk Amount (e.g., 1% of $1,000 = $10)
-        cash_at_risk = balance * self.max_risk_pct
+        cash_at_risk = float(balance) * float(self.max_risk_pct)
 
         # 4. Calculate Stop Loss Distance using standard 2x ATR multiplier
         sl_distance = volatility * Decimal("2.0")
@@ -58,7 +58,7 @@ class RiskManagerService:
 
         # Formula: Lot Size = Cash Risk / (SL Distance * Contract Size)
         try:
-            calculated_lots = cash_at_risk / (sl_distance * contract_size)
+            calculated_lots = cash_at_risk / (float(sl_distance) * float(contract_size))
             # Round down to 2 decimal places (broker standard for lot sizes)
             final_lots = max(Decimal("0.01"), round(calculated_lots, 2))
         except ZeroDivisionError:
