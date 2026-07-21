@@ -20,30 +20,21 @@ class MarketBrainService:
         Calculates the current structural market phase based on key technical features.
         Returns: (regime_string, risk_multiplier)
         """
-        # Fallback in case parameters are passed under alternative keys
         rsi = rsi if rsi is not None else kwargs.get("rsi_14", 50.0)
         atr = atr if atr is not None else kwargs.get("atr_14", 1.0)
         
-        # Safe type conversion
         try:
             rsi = float(rsi)
             atr = float(atr)
         except (ValueError, TypeError):
             rsi, atr = 50.0, 1.0
 
-        # Heuristic-based classification
-        if rsi >= 75.0:
-            return "BULL_CLIMAX", 0.50
-        elif rsi <= 25.0:
-            return "BEAR_CLIMAX", 0.50
-        elif 45.0 <= rsi <= 55.0 and atr < 1.5:
-            return "RANGING", 1.00
-        elif rsi > 55.0:
+        if rsi >= 55.0:
             return "TRENDING_UP", 1.25
-        elif rsi < 45.0:
+        elif rsi <= 45.0:
             return "TRENDING_DOWN", 1.25
-        
-        return "UNKNOWN", 1.00
+        else:
+            return "RANGING", 1.00
 
     # =====================================================================
     # 2. DYNAMIC AI EXIT ENGINE

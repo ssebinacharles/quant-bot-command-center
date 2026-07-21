@@ -95,12 +95,22 @@ class PerformanceAnalyticsService:
             insights.append("Gathering more sample trade sizes per market regime to build optimization profiles.")
             
         return insights
-    def evaluate_regime_performance_veto(self, regime: str) -> bool:
+    def evaluate_regime_performance_veto(self, regime):
         """
-        Evaluates historical performance in a given market regime.
-        Returns True if trading should be vetoed (e.g., win rate < 40%), False otherwise.
+        Evaluates historical win rate for a given regime.
+        Blocks execution if win rate is under 40% with at least 3 trades.
         """
-        # TODO: Implement the actual database query and win-rate calculation logic
-        
-        # Defaulting to False so normal execution tests pass
-        return False
+        trades = TradeMemory.objects.filter(market_state__market_regime=regime, status="CLOSED")
+
+        total = trades.count()
+        if total >= 3:
+            losses = trades.filter(profit__lt=0).count()
+            win_rate = (total - losses) / total
+            if win_rate < 0.40:
+                return {
+                    "veto": True,
+                    "action": "BLOCK",
+                    "reason": f"Win rate ({win_rate * 100:.1f}%) is below 40% threshold"
+                }
+
+        return {"veto": False, "action": "ALLOW", "reason": "Win rate acceptable"}
