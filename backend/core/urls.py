@@ -15,10 +15,11 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
+# core/urls.py
 from django.contrib import admin
 from django.urls import path, include
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('', include('alpha_engine.urls')),  # Injects your trade and regime API routes
+    path('api/alpha/', include('alpha_engine.urls')),  # <--- Add 'api/alpha/' here
 ]

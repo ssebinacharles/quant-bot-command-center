@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -149,3 +150,10 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 CELERY_TIMEZONE = 'UTC'
+
+#CELERY_BEAT_SCHEDULE = {
+#   'execute-autonomous-scalper-loop': {
+#       'task': 'alpha_engine.tasks.execute_scalper_loop',
+#       'schedule': crontab(minute='*'),  # Executes at the top of every minute
+#   },
+#}

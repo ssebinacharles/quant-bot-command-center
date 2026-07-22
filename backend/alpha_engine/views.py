@@ -3,7 +3,7 @@ import uuid
 from rest_framework import viewsets, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.authentication import TokenAuthentication
 
@@ -15,8 +15,41 @@ from .services.analytics import PerformanceAnalyticsService
 from .services.portfolio import PortfolioManagerService
 from .services.layering import GoldLayeringEngine
 from .services.probability import ProbabilityEngine
+from .tasks import evaluate_live_market, record_executed_trade
 
 logger = logging.getLogger(__name__)
+
+
+@api_view(['POST'])
+def evaluate_market_view(request):
+    """
+    HTTP POST Endpoint: Receives live MT5 market telemetry from mt5_bridge.py
+    and returns the AI's execution decision.
+    """
+    market_payload = request.data
+    if not market_payload:
+        return Response({"error": "Missing market telemetry payload."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Directly execute the evaluation logic for immediate low-latency response back to MT5
+    decision = evaluate_live_market(market_payload)
+    return Response(decision, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+def record_trade_view(request):
+    """
+    HTTP POST Endpoint: Receives order confirmation from mt5_bridge.py
+    after a trade is successfully opened on MetaTrader 5.
+    """
+    trade_data = request.data
+    if not trade_data or 'ticket_id' not in trade_data:
+        return Response({"error": "Invalid trade confirmation payload."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Pass DB logging off to Celery in the background so MT5 isn't held up
+    record_executed_trade.delay(trade_data)
+    
+    return Response({"status": "Execution queued for historical database log."}, status=status.HTTP_202_ACCEPTED)
+
 
 # =====================================================================
 # 1. VIEWSETS FOR THE REACT FRONTEND
